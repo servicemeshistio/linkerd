@@ -1,0 +1,22 @@
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: helloworld-disabled
+  namespace: sample-inject-enabled-ns
+  labels:
+    run: helloworld-disabled
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      run: helloworld-disabled
+  template:
+    metadata:
+      annotations:
+        linkerd.io/inject: disabled
+      labels:
+        run: helloworld-disabled
+    spec:
+      containers:
+      - name: helloworld-disabled
+        image: buoyantio/helloworld

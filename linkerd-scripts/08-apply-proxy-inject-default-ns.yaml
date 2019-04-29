@@ -1,0 +1,21 @@
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: helloworld-enabled
+  labels:
+    run: helloworld-enabled
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      run: helloworld-enabled
+  template:
+    metadata:
+      annotations:
+        linkerd.io/inject: enabled
+      labels:
+        run: helloworld-enabled
+    spec:
+      containers:
+      - name: helloworld-enabled
+        image: buoyantio/helloworld
