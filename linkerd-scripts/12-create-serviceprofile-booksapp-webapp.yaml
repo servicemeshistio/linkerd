@@ -1,0 +1,45 @@
+apiVersion: linkerd.io/v1alpha1
+kind: ServiceProfile
+Metadata:
+  creationTimestamp: null
+  name: webapp.booksapp.svc.cluster.local
+Self Link: /apis/linkerd.io/v1alpha1/namespaces/booksapp/serviceprofiles/webapp.booksap
+  namespace: booksapp
+Spec:
+  Routes:
+    Condition:
+      Method:      GET
+      Path Regex:  /
+    Name:          GET /
+    Condition:
+      Method:      POST
+      Path Regex:  /authors
+    Name:          POST /authors
+    Condition:
+      Method:      GET
+      Path Regex:  /authors/[^/]*
+    Name:          GET /authors/{id}
+    Condition:
+      Method:      POST
+      Path Regex:  /authors/[^/]*/delete
+    Name:          POST /authors/{id}/delete
+    Condition:
+      Method:      POST
+      Path Regex:  /authors/[^/]*/edit
+    Name:          POST /authors/{id}/edit
+    Condition:
+      Method:      POST
+      Path Regex:  /books
+    Name:          POST /books
+    Condition:
+      Method:      GET
+      Path Regex:  /books/[^/]*
+    Name:          GET /books/{id}
+    Condition:
+      Method:      POST
+      Path Regex:  /books/[^/]*/delete
+    Name:          POST /books/{id}/delete
+    Condition:
+      Method:      POST
+      Path Regex:  /books/[^/]*/edit
+    Name:          POST /books/{id}/edit
