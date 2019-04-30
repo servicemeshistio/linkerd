@@ -701,3 +701,198 @@ Once the configuration is applied, verify the deployment pod is NOT injected wit
 helloworld-disabled
 ```
 
+# Configuring Retries
+
+For Linkerd to do automatic retries of failures, additional information is required for which requests will need to be re-tried and how many times should the re-try happen.
+
+Unfortunately, automatic re-tries for a request that changes state could impact user experience and increase load to the system. Many request retries could potentially take down the system because of the re-tries not providing enough time for recovery.
+
+Admins can enable a retry budget, that limits # of re-tries that can be performed against a service as percentage of original requests.
+
+This prevents retires from overwhelming your system. By default, re-tries may add additional 20% of request load.
+
+Settings can be adjusted by applying a `retrybudget` on service profile.
+
+```yaml
+spec:
+  retryBudget:
+    retryRatio: 0.2
+    minRetriesPerSecond: 10
+    ttl: 10s
+```
+
+# Configuring Timeouts
+
+Linkerd wait time can be limited through timeouts before failing an outgoing requests to another service.
+
+Every route may define a timeout that specifies a max amount of time to wait for a response (including re-tries) to complete after the request is sent. Once a timeout is reached, Linkerd will cancel the request and return a 504 response. Default timeout is 10 seconds.
+
+```yaml
+spec:
+  routes:
+  - condition:
+      method: HEAD
+      pathRegex: /authors/[^/]*\.json
+    name: HEAD /authors/{id}.json
+    timeout: 300ms
+```
+
+# Debugging EMOJI service
+
+Install Linkerd and the `emoji` demo app within a kubernetes cluster. The setup can be seen on the linkerd dashboard with a dedicated `emojivoto` namespace, including deployments. 
+
+Navigate to deployment page for web, here you see the web deployment is taking traffic from `vote-bot`, deployment included with `emojivoto` to continually generate low level of live traffic. Web deployment also has two outgoing dependency, `emjoi` and `voting`.
+
+There are two calls that shown in the web
+
+1) `vote-bot` calls to the `/api/vote`
+2) `VoteDoughnut` calls from the web deployment to its dependent deployment, `voting`. 
+
+Since `/api/vote` is an  incoming call and `VoteDoughnut` is outgoing, the voting deployment is failing requests. A failure in dependent deployment is causing the errors that web is returning.
+
+Click on the `tap` icon, these are the live requests that match only this endpoint. There will be an unknown status under the `GRPC status` column. This is a common error responses within Linkerd and they are aware of gRPC's response classification without any configuration.
+
+# Deploy BooksApp Service
+
+The Booksapp service is a ruby application that manages a `bookshelf`. It has many microservices that uses JSON over HTTP to communicate with other services.
+
+The three services are:
+
+1) `webapp`, which is the frontend microservice
+2) `authors`, an API to manage authors in the system
+3) `books`, an API to manage books in the system
+
+## Install the microservice
+
+Install booksapp by creating namespace, dedicated pod security policy and injecting linkerd proxy:
+
+```bash
+[root@osc01 linkerd-scripts]# kubectl create ns booksapp
+namespace/booksapp created
+```
+
+Apply the `booksapp` namespace pod security policy
+
+```bash
+[root@osc01 linkerd-scripts]# kubectl apply -f 10-create-podsecuritypolicy-booksapp.yaml -n booksapp
+podsecuritypolicy.policy/booksapp-example created
+```
+
+Apply the cluster role policy for service account `booksapp`
+
+```bash
+[root@osc01 linkerd-scripts]# kubectl apply -f 11-create-cluster-role-policy-booksapp.yaml
+clusterrolebinding.rbac.authorization.k8s.io/booksapp-cluster-role-binding created
+```
+
+Inject the `booksapp` service with automatic proxy and install the microservice.
+
+```bash
+[root@osc01 linkerd-scripts]# kubectl apply -f booksapp.yaml -n booksapp
+service/webapp created
+deployment.extensions/webapp created
+service/authors created
+deployment.extensions/authors created
+service/books created
+deployment.extensions/books created
+deployment.extensions/traffic created
+```
+
+Validate the booksapp services, pods and replica sets are running:
+
+```bash
+[root@osc01 linkerd-scripts]# kubectl -n booksapp get all
+NAME                           READY   STATUS    RESTARTS   AGE
+pod/authors-74695fc659-2ftlq   1/1     Running   0          14s
+pod/books-6d77d575bc-pnprn     1/1     Running   0          14s
+pod/traffic-76b49b884d-mhclq   1/1     Running   0          13s
+pod/webapp-d99b48fc5-4p64q     1/1     Running   0          14s
+pod/webapp-d99b48fc5-5vxb2     1/1     Running   0          14s
+pod/webapp-d99b48fc5-h2rnh     1/1     Running   0          14s
+
+NAME              TYPE           CLUSTER-IP   EXTERNAL-IP   PORT(S)          AGE
+service/authors   ClusterIP      None         <none>        7001/TCP         14s
+service/books     ClusterIP      None         <none>        7002/TCP         14s
+service/webapp    LoadBalancer   10.0.0.76    <pending>     7000:31245/TCP   14s
+
+NAME                      DESIRED   CURRENT   UP-TO-DATE   AVAILABLE   AGE
+deployment.apps/authors   1         1         1            1           14s
+deployment.apps/books     1         1         1            1           14s
+deployment.apps/traffic   1         1         1            1           14s
+deployment.apps/webapp    3         3         3            3           14s
+
+NAME                                 DESIRED   CURRENT   READY   AGE
+replicaset.apps/authors-74695fc659   1         1         1       14s
+replicaset.apps/books-6d77d575bc     1         1         1       14s
+replicaset.apps/traffic-76b49b884d   1         1         1       13s
+replicaset.apps/webapp-d99b48fc5     3         3         3       14s
+```
+
+Validate linkerd `webapp` services are ready for traffic
+
+```bash
+[root@osc01 linkerd-scripts]# kubectl -n booksapp rollout status deploy webapp
+deployment "webapp" successfully rolled out
+```
+
+Now that the `booksapp` service is installed, enable port forward to access the app from your browser within virtual machine.
+
+```console
+[root@osc01 linkerd-scripts]# kubectl -n booksapp port-forward svc/webapp 7000 &
+[1] 29362
+[root@osc01 linkerd-scripts]# Forwarding from 127.0.0.1:7000 -> 7000
+Handling connection for 7000
+Handling connection for 7000
+...
+```
+
+Within the booksapp, if you try to add a book, it will fail 50% of the time and throw out an `Internal Service Error`. This is intentional, and idea is to show that since the application is running fine, there are returning errors.
+
+## Add Linkerd
+
+Apply `linkerd inject` adds:
+
+1) an `initContainer` that sets up iptables to allow forwarding for all incoming and outgoing traffic through Linkerd's sidecar proxy.
+2) a `container` that runs the proxy.
+
+```bash
+[root@osc01 ~]# kubectl get -n booksapp deploy -o yaml | linkerd inject - | kubectl apply -f -
+
+deployment "authors" injected
+deployment "books" injected
+deployment "traffic" injected
+deployment "webapp" injected
+
+deployment.extensions/authors configured
+deployment.extensions/books configured
+deployment.extensions/traffic configured
+deployment.extensions/webapp configured
+```
+
+Validate the pod count has incremented from 1 to 2.
+
+```bash
+NAME                       READY   STATUS    RESTARTS   AGE
+authors-86d54dd46b-jwcqc   2/2     Running   0          82s
+books-84dfdfb49b-4zq2q     2/2     Running   0          80s
+traffic-58b889c65b-2fdrb   2/2     Running   0          79s
+webapp-647fff74b7-2ckz4    2/2     Running   0          66s
+webapp-647fff74b7-6hvjw    2/2     Running   0          77s
+webapp-647fff74b7-95kvj    2/2     Running   0          77s
+```
+
+Now that the linkerd proxy is inject, lets debug the `booksapp` service to identify the app failures.
+
+## Debugging
+
+Navigate to the linkerd dashboard and click on `booksapp` namespace to show its designated services.
+
+Click on `webapp` service, which takes you to the deployment page.
+
+Here you can see the service topology of which booksapp services is the webapp communicating with.
+
+The great feature about this view is that it provides live calls for all service to service requests and responses and the necessary success rate metrics.
+
+## Service Profiles
+
+
