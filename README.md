@@ -651,11 +651,15 @@ Validate the sample application running pods, replica sets and deployment pod in
 [root@osc01 linkerd-scripts]# kgp -n sample-inject-enabled-ns
 NAME                        READY   STATUS    RESTARTS   AGE
 helloworld-f5b7bfc5-fbbzn   2/2     Running   0          3m29s
+```
 
+```bash
 [root@osc01 linkerd-scripts]# kgrs -n sample-inject-enabled-ns
 NAME                  DESIRED   CURRENT   READY   AGE
 helloworld-f5b7bfc5   1         1         1       31m
+```
 
+```bash
 [root@osc01 linkerd-scripts]# kubectl -n sample-inject-enabled-ns get po -l run=helloworld -o jsonpath='{.items[0].spec.containers[*].name}'
 helloworld linkerd-proxy
 ```
@@ -895,4 +899,438 @@ The great feature about this view is that it provides live calls for all service
 
 ## Service Profiles
 
+If you're facing intermittent issues, service profiles can be leveraged to provide additional troubleshooting about your servies.
+
+These profiles define routes and allow collection of metrics / route basis. Prometheus is a great platform to store such metrics.
+
+To setup a service profile, use existing OpenAPI (Swagger) specs.
+
+In the example below, create a service profile for `webapp`:
+
+```bash
+[root@osc01 linkerd-scripts]# curl -sL https://run.linkerd.io/booksapp/webapp.swagger | linkerd -n booksapp profile --open-api - webapp | kubectl -n booksapp apply -f -
+serviceprofile.linkerd.io/webapp.booksapp.svc.cluster.local created
+```
+
+The command does three things:
+
+1) Fetches the swagger specification for `webapp`
+2) Coverts the spec to service profile using `profile` command
+3) Apply the configuration to the cluster
+
+Validate the serviceprofile was created for `webapp`
+
+
+```bash
+[root@osc01 linkerd-scripts]# kubectl get serviceprofile -n booksapp
+NAME                                AGE
+webapp.booksapp.svc.cluster.local   5m
+```
+
+Check the serviceprofile YAML, Linkerd uses the `Host` header of requests to associate service profiles with requests. The host and it's header in this case is `webapp.booksapp.svc.cluster.local`, it will use this to lookup profile configuration.
+
+```console
+API Version:  linkerd.io/v1alpha1
+Kind:         ServiceProfile
+Metadata:
+  Creation Timestamp:  2019-04-30T14:57:01Z
+  Generation:          1
+  Resource Version:    72916
+  Self Link:           /apis/linkerd.io/v1alpha1/namespaces/booksapp/serviceprofiles/webapp.booksapp.svc.cluster.local
+  UID:                 35d21a9e-6b58-11e9-9c20-00505632f6a0
+Spec:
+  Routes:
+    Condition:
+      Method:      GET
+      Path Regex:  /
+    Name:          GET /
+    Condition:
+      Method:      POST
+      Path Regex:  /authors
+    Name:          POST /authors
+    Condition:
+      Method:      GET
+      Path Regex:  /authors/[^/]*
+    Name:          GET /authors/{id}
+    Condition:
+      Method:      POST
+      Path Regex:  /authors/[^/]*/delete
+    Name:          POST /authors/{id}/delete
+    Condition:
+      Method:      POST
+      Path Regex:  /authors/[^/]*/edit
+    Name:          POST /authors/{id}/edit
+    Condition:
+      Method:      POST
+      Path Regex:  /books
+    Name:          POST /books
+    Condition:
+      Method:      GET
+      Path Regex:  /books/[^/]*
+    Name:          GET /books/{id}
+    Condition:
+      Method:      POST
+      Path Regex:  /books/[^/]*/delete
+    Name:          POST /books/{id}/delete
+    Condition:
+      Method:      POST
+      Path Regex:  /books/[^/]*/edit
+    Name:          POST /books/{id}/edit
+```
+
+Route are defined by simple conditions that contain method (`GET` for instance) with a regex to match the path. This allows the grouping of REST style resources together.
+
+Next, create service profiles for `authors` 
+
+```bash
+[root@osc01 linkerd-scripts]# curl -sL https://run.linkerd.io/booksapp/authors.swagger | linkerd -n booksapp profile --open-api - authors | kubectl -n booksapp apply -f -
+serviceprofile.linkerd.io/authors.booksapp.svc.cluster.local created
+```
+
+And service profile for `books`
+
+```bash
+[root@osc01 linkerd-scripts]# curl -sL https://run.linkerd.io/booksapp/books.swagger | linkerd -n booksapp profile --open-api - books | kubectl -n booksapp apply -f -
+serviceprofile.linkerd.io/books.booksapp.svc.cluster.local created
+```
+
+Verify that all the service profiles are available through CLI or through Linkerd dashboard under `linkerd tap`. Every live request will show up with an `:authority` or `host` header.
+
+From the CLI run the following command to see the live requests:
+
+```bash
+[root@osc01 linkerd-scripts]# linkerd -n booksapp tap deploy/webapp -o wide | grep req
+req id=8:1 proxy=in  src=10.1.230.241:54042 dst=10.1.230.199:7000 tls=true :method=GET :authority=webapp:7000 :path=/authors/1353 src_res=deploy/traffic src_ns=booksapp dst_res=deploy/webapp dst_ns=booksapp rt_route=GET /authors/{id}
+
+req id=8:2 proxy=out src=10.1.230.199:54584 dst=10.1.230.229:7001 tls=true :method=GET :authority=authors:7001 :path=/authors/1353.json src_res=deploy/webapp src_ns=booksapp dst_res=deploy/authors dst_ns=booksapp rt_route=GET /authors/{id}.json
+
+req id=8:3 proxy=out src=10.1.230.199:39244 dst=10.1.230.245:7002 tls=true :method=GET :authority=books:7002 :path=/books.json src_res=deploy/webapp src_ns=booksapp dst_res=deploy/books dst_ns=booksapp rt_route=GET /books.json
+
+...
+
+```
+
+What you see in the output are:
+
+1) `:authority` which is the host 
+2) `:path` that is being used
+3) `:rt_route` is the route name.
+
+These metrics are part of the `linkerd routes` instead of `linkerd stat`.
+
+Accumulated metrics by Linkerd
+
+```bash
+[root@osc01 ~]# linkerd -n booksapp routes svc/webapp
+ROUTE                       SERVICE   SUCCESS      RPS   LATENCY_P50   LATENCY_P95   LATENCY_P99
+GET /                        webapp   100.00%   0.6rps          19ms          29ms          30ms
+GET /authors/{id}            webapp   100.00%   0.6rps          16ms          27ms          29ms
+GET /books/{id}              webapp   100.00%   1.2rps          18ms          36ms          39ms
+POST /authors                webapp   100.00%   0.6rps          16ms          36ms          39ms
+POST /authors/{id}/delete    webapp   100.00%   0.6rps          23ms          29ms          30ms
+POST /authors/{id}/edit      webapp     0.00%   0.0rps           0ms           0ms           0ms
+POST /books                  webapp    50.35%   2.4rps          18ms          39ms          48ms
+POST /books/{id}/delete      webapp   100.00%   0.6rps          10ms          27ms          29ms
+POST /books/{id}/edit        webapp    50.70%   1.2rps          75ms          98ms         100ms
+[DEFAULT]                    webapp     0.00%   0.0rps           0ms           0ms           0ms
+```
+
+Service profiles can be used to observer incoming and outgoing requests, to see that:
+
+```bash
+[root@osc01 ~]# linkerd -n booksapp routes deploy/webapp --to svc/books
+ROUTE                     SERVICE   SUCCESS      RPS   LATENCY_P50   LATENCY_P95   LATENCY_P99
+DELETE /books/{id}.json     books   100.00%   0.6rps          13ms          19ms          20ms
+GET /books.json             books   100.00%   1.1rps           8ms          19ms          20ms
+GET /books/{id}.json        books   100.00%   2.1rps           8ms          20ms          28ms
+POST /books.json            books    49.62%   2.2rps          22ms          39ms          40ms
+PUT /books/{id}.json        books    49.21%   1.1rps          61ms          96ms          99ms
+[DEFAULT]                   books     0.00%   0.0rps           0ms           0ms           0ms
+```
+
+This view shows all requests and routes that originates within the `webapp` deployment and are destined for the `books` service. 
+
+As you can see, the  requests for books has a lower success percentage versus the other services like `author`. This shows the root causes of the internal error we were facing earlier in the demo about about not being able to add additional books. 
+
+## Retries
+
+Code updates or new version upgrades, can notify linkerd to retry requests for a failing endpoint. This process will increase request latencies, becuase the requests will be retried multiple times. 
+
+Within the `booksapp` service, the success rate from `books` to `authors` is poor. To see these metrics:
+
+```bash
+[root@osc01 ~]# linkerd -n booksapp routes deploy/books --to svc/authors
+ROUTE                       SERVICE   SUCCESS      RPS   LATENCY_P50   LATENCY_P95   LATENCY_P99
+DELETE /authors/{id}.json   authors     0.00%   0.0rps           0ms           0ms           0ms
+GET /authors.json           authors     0.00%   0.0rps           0ms           0ms           0ms
+GET /authors/{id}.json      authors     0.00%   0.0rps           0ms           0ms           0ms
+HEAD /authors/{id}.json     authors    47.52%   3.4rps           4ms          11ms          18ms
+POST /authors.json          authors     0.00%   0.0rps           0ms           0ms           0ms
+[DEFAULT]                   authors     0.00%   0.0rps           0ms           0ms           0ms
+```
+
+As noticed, the requests from books to authors has a 47% success rate and causing failures the remaining 53% of the time. 
+
+To fix this issue, edit the `authors` service profile and make those requests re-try if a failure occurs by adding `isRetryable: true` to a specific route under specifications.
+
+Run the following command to edit the service profile for `books`: `kubectl -n booksapp edit sp/authors.booksapp.svc.cluster.local`
+
+```yaml
+  - condition:
+      method: HEAD
+      pathRegex: /authors/[^/]*\.json
+    name: HEAD /authors/{id}.json
+    isRetryable: true ### Add this line ###
+```
+
+Save and exit the service profile. Next, Linkerd will begin to retry the requests to this route automatically. 
+
+If you re-run the `linkerd -n booksapp routes deploy/books --to svc/authors` command, you will see the success rate percentage increase, eventually to 100% success after the re-tries are enabled.
+
+```console
+[root@osc01 ~]# linkerd -n booksapp routes deploy/books --to svc/authors
+ROUTE                       SERVICE   SUCCESS      RPS   LATENCY_P50   LATENCY_P95   LATENCY_P99
+DELETE /authors/{id}.json   authors     0.00%   0.0rps           0ms           0ms           0ms
+GET /authors.json           authors     0.00%   0.0rps           0ms           0ms           0ms
+GET /authors/{id}.json      authors     0.00%   0.0rps           0ms           0ms           0ms
+HEAD /authors/{id}.json     authors   100.00%   2.2rps          12ms          26ms          29ms
+POST /authors.json          authors     0.00%   0.0rps           0ms           0ms           0ms
+[DEFAULT]                   authors     0.00%   0.0rps           0ms           0ms           0ms
+```
+
+If you add the `-o wide` extension, you will see a success rate of `EFFECTIVE_SUCCESS` and `ACTUAL_SUCCESS`.
+
+```bash
+[root@osc01 ~]# linkerd -n booksapp routes deploy/books --to svc/authors -o wide
+ROUTE                       SERVICE   EFFECTIVE_SUCCESS   EFFECTIVE_RPS   ACTUAL_SUCCESS   ACTUAL_RPS   LATENCY_P50   LATENCY_P95   LATENCY_P99
+DELETE /authors/{id}.json   authors               0.00%          0.0rps            0.00%       0.0rps           0ms           0ms           0ms
+GET /authors.json           authors               0.00%          0.0rps            0.00%       0.0rps           0ms           0ms           0ms
+GET /authors/{id}.json      authors               0.00%          0.0rps            0.00%       0.0rps           0ms           0ms           0ms
+HEAD /authors/{id}.json     authors             100.00%          2.2rps           45.14%       4.8rps           9ms          27ms          29ms
+POST /authors.json          authors               0.00%          0.0rps            0.00%       0.0rps           0ms           0ms           0ms
+[DEFAULT]                   authors               0.00%          0.0rps            0.00%       0.0rps           0ms           0ms           0ms
+```
+
+The difference between the two success rates is, how well are the retries working. 
+`EFFECTIVE_RPS` and `ACTUAL_RPS` show many requests are being sent to this destination service and how many are receive by the Linkerd proxy.
+
+If you notice, enabling retries, the latency of `P95` and `P99` has also increased. This behavior is expected as that's one of the outcomes of enabling re-tries.
+
+## Timeouts
+
+Linked can limit wait times for failed outgoing requests going to another microservice. Tiemouts work by adding a key to the service profile's route configuration.
+
+To get started, let's look at the latency for requests from `webapp` to the `books` service:
+
+```bash
+[root@osc01 ~]# linkerd -n booksapp routes deploy/webapp --to svc/books
+ROUTE                     SERVICE   SUCCESS      RPS   LATENCY_P50   LATENCY_P95   LATENCY_P99
+DELETE /books/{id}.json     books   100.00%   0.7rps          11ms          19ms          20ms
+GET /books.json             books   100.00%   1.4rps          11ms          27ms          29ms
+GET /books/{id}.json        books   100.00%   2.2rps           6ms          17ms          19ms
+POST /books.json            books   100.00%   1.4rps          25ms          39ms          40ms
+PUT /books/{id}.json        books   100.00%   0.7rps          71ms          97ms          99ms
+[DEFAULT]                   books     0.00%   0.0rps           0ms           0ms           0ms
+```
+
+For now, lets set a timeout limit of `25ms` to the `books` service profile, and add the re-tries `timeout` property under specification.
+
+Run the following command to edit the service profile for `books`: `kubectl -n booksapp edit sp/authors.booksapp.svc.cluster.local`
+
+```yaml
+  - condition:
+      method: HEAD
+      pathRegex: /authors/[^/]*\.json
+    isRetryable: true
+    name: HEAD /authors/{id}.json
+    timeout: 25ms ### Add this line ###
+```
+
+Linkerd will now return erros to the `webapp` REST client whenever a timeout is reached. 
+
+Timeouts includes re-try requests and maximum amount of time REST client would wait for a response.
+
+If you run the routes command, you will see that the metrics have changed for overall effecitive and actual success rates.
+
+```bash
+[root@osc01 ~]# linkerd -n booksapp routes deploy/webapp --to svc/books -o wide
+ROUTE                     SERVICE   EFFECTIVE_SUCCESS   EFFECTIVE_RPS   ACTUAL_SUCCESS   ACTUAL_RPS   LATENCY_P50   LATENCY_P95   LATENCY_P99
+DELETE /books/{id}.json     books             100.00%          0.7rps          100.00%       0.7rps           5ms          19ms          20ms
+GET /books.json             books             100.00%          1.4rps          100.00%       1.4rps           7ms          22ms          28ms
+GET /books/{id}.json        books             100.00%          2.1rps          100.00%       2.1rps           5ms          18ms          20ms
+POST /books.json            books              93.41%          1.5rps           93.41%       1.5rps          22ms          33ms          39ms
+PUT /books/{id}.json        books              97.73%          0.7rps           97.73%       0.7rps          72ms          97ms          99ms
+[DEFAULT]                   books               0.00%          0.0rps            0.00%       0.0rps           0ms           0ms           0ms
+```
+
+# Exporting Metrics
+
+As of now, Linkerd only stores metrics for a 6 hour fixed window. If the metrics data is valuable, you want to store that data within a metrics store.
+
+Internally, Linkerd stores metrics within Prometheus as a metrics store. The Prometheus's federation API is designed for copying data from one prometheus to another.
+
+## Prometheus Federation API
+
+Add the following under the `scraps_configs` to Prometheus config map.
+
+```yaml
+- job_name: 'linkerd'
+  kubernetes_sd_configs:
+  - role: pod
+    namespaces:
+      names: ['linkerd']
+
+  relabel_configs:
+  - source_labels:
+    - __meta_kubernetes_pod_container_name
+    action: keep
+    regex: ^prometheus$
+
+  honor_labels: true
+  metrics_path: '/federate'
+
+  params:
+    'match[]':
+      - '{job="linkerd-proxy"}'
+      - '{job="linkerd-controller"}'
+```
+
+```bash
+[root@osc01 ~]# kubectl edit cm -n linkerd
+configmap/linkerd-config skipped
+configmap/linkerd-grafana-config skipped
+configmap/linkerd-prometheus-config edited
+```
+
+With this update, Prometheus is now configured to federate Linkerd's metrics from Linkerd's internal Prometheus instance.
+
+## Extracting Data using Prometheus APIs
+
+Call the Prometheus API to extract data from Linkerd using the following command
+
+```bash
+curl -G \
+  --data-urlencode 'match[]={job="linkerd-proxy"}' \
+  --data-urlencode 'match[]={job="linkerd-controller"}' \
+  http://linkerd-prometheus.linkerd.svc.cluster.local:9090/federate
+```
+
+Prometheus provides a JSON query API to retrieve all metrics:
+
+```bash
+[root@osc01 ~]# curl http://linkerd-prometheus.linkerd.svc.cluster.local:9090/api/v1/query?query=request_total
+{"status":"success","data":{"resultType":"vector","result":[{"metric":{"__name__":"request_total","authority":"authors.booksapp.svc.cluster.local:7001","client_id":"default.booksapp.serviceaccount.identity.linkerd.cluster.local","control_plane_ns":"linkerd","deployment":"authors","direction":"inbound","instance":"10.1.230.229:4191","job":"linkerd-proxy","namespace":"booksapp","pod":"authors-86d54dd46b-jwcqc","tls":"true"},"value":[1556647157.712,"79096"]},{"metric":{"__name__":"request_total","authority":"authors.booksapp.svc.cluster.local:7001","control_plane_ns":"linkerd","deployment":"books","direction":"outbound","dst_control_plane_ns":"linkerd","dst_deployment":"authors","dst_namespace":"booksapp","dst_pod":"authors-86d54dd46b-jwcqc","dst_pod_template_hash":"86d54dd46b","dst_service":"authors","dst_serviceaccount":"default","instance":"10.1.230.245:4191","job":"linkerd-proxy","namespace":"booksapp","pod":"books-84dfdfb49b-4zq2q","server_id":"default.booksapp.serviceaccount.identity.linkerd.cluster.local","tls":"true"},
+...
+```
+
+## Gather data from Linkerd Proxy directly
+
+If users want to avoid using Prometheus, you can query Linkerd proxies directly within their `/metrics` endpoint.
+
+View the `/metrics` within a linked proxy 
+
+```bash
+[root@osc01 ~]# kubectl -n linkerd port-forward $(kubectl -n linkerd get pods -l linkerd.io/control-plane-ns=linkerd -o jsonpath='{.items[0].metadata.name}') 4191:4191
+Forwarding from 127.0.0.1:4191 -> 4191
+```
+
+And run the following `curl` command to see the output
+
+```bash
+[root@osc01 ~]# curl localhost:4191/metrics
+# HELP request_total Total count of HTTP requests.
+# TYPE request_total counter
+request_total{direction="inbound",tls="no_identity",no_tls_reason="not_provided_by_remote"} 9723
+request_total{authority="linkerd-prometheus.linkerd.svc.cluster.local:9090",direction="outbound",dst_control_plane_ns="linkerd",dst_deployment="linkerd-prometheus",dst_namespace="linkerd",dst_pod="linkerd-prometheus-84c68f7c67-f2xrb",dst_pod_template_hash="84c68f7c67",dst_service="linkerd-prometheus",dst_serviceaccount="linkerd-prometheus",tls="true",server_id="linkerd-prometheus.linkerd.serviceaccount.identity.linkerd.cluster.local"} 98373
+request_total{authority="linkerd-destination.linkerd.svc.cluster.local:8086",direction="inbound",tls="true",client_id="default.emojivoto.serviceaccount.identity.linkerd.cluster.local"} 2
+request_total{authority="linkerd-destination.linkerd.svc.cluster.local:8086",direction="inbound",tls="true",client_id="linkerd-prometheus.linkerd.serviceaccount.identity.linkerd.cluster.local"} 1
+request_total{authority="linkerd-destination.linkerd.svc.cluster.local:8086",direction="inbound",tls="true",client_id="web.emojivoto.serviceaccount.identity.linkerd.cluster.local"} 5
+request_total{authority="linkerd-destination.linkerd.svc.cluster.local:8086",direction="inbound",tls="true",client_id="default.booksapp.serviceaccount.identity.linkerd.cluster.local"} 23
+request_total{authority="linkerd-destination.linkerd.svc.cluster.local:8086",direction="inbound",tls="true",client_id="linkerd-identity.linkerd.serviceaccount.identity.linkerd.cluster.local"} 1
+request_total{authority="linkerd-destination.linkerd.svc.cluster.local:8086",direction="inbound",tls="true",client_id="emoji.emojivoto.serviceaccount.identity.linkerd.cluster.local"} 1
+request_total{authority="linkerd-destination.linkerd.svc.cluster.local:8086",direction="inbound",tls="true",client_id="voting.emojivoto.serviceaccount.identity.linkerd.cluster.local"} 1
+request_total{authority="linkerd-destination.linkerd.svc.cluster.local:8086",direction="inbound",tls="true",client_id="linkerd-web.linkerd.serviceaccount.identity.linkerd.cluster.local"} 2
+request_total{authority="linkerd-controller-api.linkerd.svc.cluster.local:8085",direction="inbound",tls="true",client_id="linkerd-web.linkerd.serviceaccount.identity.linkerd.cluster.local"} 5114
+request_total{direction="outbound",tls="no_identity",no_tls_reason="no_authority_in_http_request"} 263
+# HELP response_latency_ms Elapsed times between a request's headers being received and its response stream completing
+# TYPE response_latency_ms histogram
+response_latency_ms_bucket{direction="inbound",tls="no_identity",no_tls_reason="not_provided_by_remote",status_code="200",le="1"} 7202
+response_latency_ms_bucket{direction="inbound",tls="no_identity",no_tls_reason="not_provided_by_remote",status_code="200",le="2"} 8251
+response_latency_ms_bucket{direction="inbound",tls="no_identity",no_tls_reason="not_provided_by_remote",status_code="200",le="3"} 8639
+response_latency_ms_bucket{direction="inbound",tls="no_identity",no_tls_reason="not_provided_by_remote",status_code="200",le="4"} 8929
+response_latency_ms_bucket{direction="inbound",tls="no_identity",no_tls_reason="not_provided_by_remote",status_code="200",le="5"} 9095
+response_latency_ms_bucket{direction="inbound",tls="no_identity",no_tls_reason="not_provided_by_remote",status_code="200",le="10"} 9566
+response_latency_ms_bucket{direction="inbound",tls="no_identity",no_tls_reason="not_provided_by_remote",status_code="200",le="20"} 9684
+response_latency_ms_bucket{direction="inbound",tls="no_identity",no_tls_reason="not_provided_by_remote",status_code="200",le="30"} 9704
+...
+```
+
+# Exposing the dashboard
+
+An alternate to the Linkerd dashboard, you can exposre the dashboard metrics via an ingress. 
+
+Lets create an ingress secret definition for nginx, this process will expose the dashboard at `dashboard.example.com` and protect it with basic auth admin/admin. 
+
+```bash
+[root@osc01 linkerd-scripts]# kubectl apply -f 13-create-ingress-secret-nginx.yaml -n linkerd
+secret/web-ingress-auth created
+ingress.extensions/web-ingress created
+```
+
+Next, create an ingress secret definition for Traefik, this process will expose the dashboard at `dashboard.example.com` and protect it with basic auth admin/admin.
+
+```bash
+[root@osc01 linkerd-scripts]# kubectl apply -f 14-create-ingress-secret-traefik.yaml -n linkerd
+secret/web-ingress-auth unchanged
+ingress.extensions/web-ingress configured
+```
+
+# Getting Per-Route Metrics
+
+View per-route metrics within the CLI by running the `linkerd routes` command
+
+```bash
+[root@osc01 linkerd-scripts]# linkerd routes svc/webapp -n booksapp
+ROUTE                       SERVICE   SUCCESS      RPS   LATENCY_P50   LATENCY_P95   LATENCY_P99
+GET /                        webapp   100.00%   0.8rps          20ms          85ms          97ms
+GET /authors/{id}            webapp   100.00%   0.7rps          17ms          46ms          49ms
+GET /books/{id}              webapp   100.00%   1.5rps          22ms          72ms          94ms
+POST /authors                webapp   100.00%   0.7rps          19ms          39ms          40ms
+POST /authors/{id}/delete    webapp   100.00%   0.8rps          27ms          77ms          96ms
+POST /authors/{id}/edit      webapp     0.00%   0.0rps           0ms           0ms           0ms
+POST /books                  webapp    98.85%   1.4rps          25ms          70ms          94ms
+POST /books/{id}/delete      webapp   100.00%   0.7rps          16ms          28ms          30ms
+POST /books/{id}/edit        webapp    97.87%   0.8rps          80ms         170ms         194ms
+[DEFAULT]                    webapp     0.00%   0.0rps           0ms           0ms           0ms
+```
+
+The `[DEFAULT]` route is displayed if a route match doesn't exist the regexes specified in a service profile. Users can look up metrics by other resource types as well:
+
+```bash
+[root@osc01 linkerd-scripts]# linkerd routes deploy/webapp -n booksapp
+ROUTE                       SERVICE   SUCCESS      RPS   LATENCY_P50   LATENCY_P95   LATENCY_P99
+GET /                        webapp   100.00%   0.8rps          35ms          75ms          95ms
+GET /authors/{id}            webapp   100.00%   0.8rps          32ms          48ms          50ms
+GET /books/{id}              webapp   100.00%   1.5rps          21ms          47ms          49ms
+POST /authors                webapp   100.00%   0.8rps          27ms          47ms          49ms
+POST /authors/{id}/delete    webapp   100.00%   0.7rps          28ms          86ms          97ms
+POST /authors/{id}/edit      webapp     0.00%   0.0rps           0ms           0ms           0ms
+POST /books                  webapp    97.85%   1.6rps          23ms          80ms          96ms
+POST /books/{id}/delete      webapp   100.00%   0.8rps          20ms          37ms          39ms
+POST /books/{id}/edit        webapp    97.67%   0.7rps          88ms         185ms         197ms
+[DEFAULT]                    webapp     0.00%   0.0rps           0ms           0ms           0ms
+```
+
+Users also have the capability to filter down to requests going from a specific resource to other services.
+
+```bash
+[root@osc01 linkerd-scripts]# linkerd routes deploy/webapp --to svc/books -n booksapp
+ROUTE                     SERVICE   SUCCESS      RPS   LATENCY_P50   LATENCY_P95   LATENCY_P99
+DELETE /books/{id}.json     books   100.00%   0.7rps           8ms          19ms          20ms
+GET /books.json             books   100.00%   1.4rps           8ms          23ms          29ms
+GET /books/{id}.json        books   100.00%   2.2rps           6ms          19ms          20ms
+POST /books.json            books    95.65%   1.5rps          18ms          46ms          49ms
+PUT /books/{id}.json        books    95.56%   0.8rps          71ms          97ms          99ms
+[DEFAULT]                   books     0.00%   0.0rps           0ms           0ms           0ms
+```
 
